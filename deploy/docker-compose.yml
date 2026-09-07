@@ -1,0 +1,45 @@
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    hostname: searxng
+
+    environment:
+      - SEARXNG_BASE_URL=http://192.168.1.220:8080/
+      - SEARXNG_SECRET_KEY=file:///etc/searxng/secret_key
+      - TZ=Asia/Shanghai
+      # 经本机 mihomo 代理访问被墙引擎（google/ddg 等）
+      - HTTP_PROXY=http://172.28.0.10:7890
+      - HTTPS_PROXY=http://172.28.0.10:7890
+      - NO_PROXY=127.0.0.1,localhost,172.19.0.0/16
+
+    volumes:
+      - /home/docker/searxng/config:/etc/searxng
+
+    ports:
+      # Web UI + JSON API，仅局域网
+      - "8080:8080"
+
+    networks:
+      ai-browser:
+        # 固定 IP（避免与 chromium 的 172.19.0.2 冲突）
+        ipv4_address: 172.19.0.4
+      # 接入 mihomo 代理所在桥接网络
+      mihomo_hostlink:
+
+    mem_limit: 1g
+    cpus: 1.0
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    restart: unless-stopped
+
+networks:
+  ai-browser:
+    external: true
+  mihomo_hostlink:
+    external: true

@@ -1,87 +1,64 @@
-# dsh-researcher
+# dsh 搜索预设：SearXNG（主）+ Exa（备）
 
-个人的 DeepSeek Harness（dsh）自部署研究工作站 —— 一台 Debian 服务器上的自托管 AI 研究栈：模型路由代理、自建搜索、电商比价研究栈，以及围绕它们的全部配置、插件、踩坑实录和运维手册。
+DeepSeek Harness（dsh）Web 会话的 `web_search` 能力由两个可切换的搜索预设供给：
 
-> 本仓库是**活部署的快照与文档**：`harness/`、`skills/`、`tools/` 下的文件与服务器 `/root/.dsh/`、`/root/.dsh/tools/` 中的生产文件同源。改动服务器后请同步回本仓库。
+| 预设 | 插件 | 版本 | 角色 | 成本 |
+|---|---|---|---|---|
+| **searxng** | `@dsh-local/web-search-searxng` | 0.2.0 | **主搜索**（日常钉死） | 零（自建聚合器） |
+| **exa** | `@dsh-local/web-search-exa-settings` | 0.1.0 | **备份搜索**（语义检索 / 主搜索故障兜底） | Exa API 配额 |
 
----
+两个 provider 同时注册进 dsh 的 `ctx.web` seam，`cordis.patch.yml` 里一行 `searchProvider` 钉死当前生效者；切换 = 改一个词 + 重启服务。
 
-## 这是什么 / 一句话
+```bash
+# config/cordis.patch.yml（节选，完整见仓库）
+- id: web
+  config:
+    searchProvider: searxng    # ← 改成 exa 即切换备份预设
+```
 
-在 Debian 13 家用服务器上跑 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的 Web UI（systemd 常驻、仅监听 loopback），通过自写插件把多家模型供应商（opencode Console Go、any、agent、glm、arak…）经局域网代理统一路由，配自建 SearXNG 搜索和一套 NAS 研究技能（搜索路由 / 电商比价），从 Windows 经 SSH 端口转发直接使用。
+## 为什么是这两个预设（思路）
+
+- **自建优先**：SearXNG 跑在自己机器的 Docker 里（`deploy/`），聚合 bing/baidu/sogou/google/brave/ddg 等 13 家引擎，查询不出家门、无配额、无 API 费用，且可按中文场景定制路由。这就是它当**主预设**的原因。
+- **保留商业备份**：Exa 的 neural（语义）检索是关键词聚合器做不到的能力——"找和这篇论文相似的""找讨论过这个概念的长文"这类查询 Exa 更强；同时它是 SearXNG 整体故障时的兜底。两者能力互补，不是简单冗余。
+- **插件化而非 fork**：两个预设都以 dsh 插件形式挂载（`cordis.patch.yml` insert 行），不改 harness 本体，升级 harness 不丢搜索能力。
 
 ## 当前状态（2026-09-07）
 
-| 项目 | 状态 |
-|---|---|
-| dsh 全局包 | **`0.1.1-rc.2`**（npm 最新 `0.1.2-rc.1`，因破坏性变更**主动回滚**，见 `docs/versions.md`） |
-| 服务 | `dsh-web.service`，`127.0.0.1:3080`，systemd Restart=always |
-| 访问方式 | ① Windows → SSH 本地端口转发 → `127.0.0.1:3080`；② `dsh.19970626.xyz`（trusted-host，走反代） |
-| 认证 | 0.1.1-rc.2 无 token 门禁，直接打开即用（升级 0.1.2-rc.1 会引入启动 token，见 `docs/incidents.md` #3） |
-| 默认模型 | `opencode-go/deepseek-v4-flash`，reasoningEffort `max` |
-| 插件 | provider-proxy-settings、web-search-searxng（主搜索）、web-search-exa（备份搜索） |
-| 搜索 | 自建 SearXNG（NAS Docker，`127.0.0.1:8080`），Exa 备份 |
-| 出网代理 | `http://192.168.1.220:7890`（双通道：systemd 环境变量 + 插件 curl 级路由） |
-| Node | v22.23.1，Debian 13 |
+| 层 | 组件 | 状态 |
+|---|---|---|
+| 聚合器 | SearXNG Docker（`searxng/searxng:latest`，本机 8080 端口） | 运行中，13 引擎启用，JSON API 开放 |
+| 主预设插件 | web-search-searxng 0.2.0 | 线上生效（`searchProvider: searxng`） |
+| 备预设插件 | web-search-exa-settings 0.1.0 | 已注册可用，带 UI 设置卡片 + 热生效 |
+| harness 运行时 | dsh 0.1.1-rc.2（web profile） | searxng 预设不依赖 dsh-settings API，升级 0.1.2 无需迁移；exa 预设需迁移（见 `docs/exa-preset.md` §5） |
 
-## 架构总览
-
-```
- Windows 浏览器
-   │  ① SSH 端口转发          ② https://dsh.19970626.xyz (反代)
-   ▼
- Debian 13 服务器 (dsh-web.service, 127.0.0.1:3080)
-   │
-   ├── DeepSeek Harness 0.1.1-rc.2
-   │     ├── profile: web  (dsh-base + dsh-web-app + 3 个自写插件)
-   │     └── profile: headless (一次性任务 CLI)
-   │
-   ├── harness/plugins/provider-proxy-settings ── 拦截 llm/stream，按 provider 路由
-   │       opencode-go ──► Console Go 网关 (opencode.ai/zen/go, 带 x-opencode-session)
-   │       any ──────────► anyrouter.top   (anthropic 协议)
-   │       agent / glm ──► agentrouter.org  (openai-responses/completions)
-   │       arak ────────► windhub.cc       (未走代理路由)
-   │       全部经 LAN 代理 192.168.1.220:7890 (curl 子进程, --proxy)
-   │
-   ├── harness/plugins/web-search-searxng ──► NAS Docker SearXNG (主搜索)
-   ├── harness/plugins/web-search-exa ─────► Exa API (备份搜索)
-   │
-   ├── skills/  nas-core / nas-search / nas-shop  (研究栈技能)
-   └── tools/   cdp-*, shop-search, mc-crawl, x-search … (研究栈工具)
-        （cosdata、ledger 为 /root/01/ 下独立项目，软链挂载，不入本仓库）
-```
-
-## 目录导航
+## 目录
 
 | 路径 | 内容 |
 |---|---|
-| `docs/architecture.md` | 设计思路、每个组件为什么这样做、插件机制详解 |
-| `docs/deployment.md` | 从零部署手册：systemd、代理双通道、SSH 转发、密钥管理 |
-| `docs/versions.md` | 版本策略、升级翻车记、回滚操作实录、备份位置 |
-| `docs/incidents.md` | 踩坑实录（boot manifest batches、token 门禁、x-opencode-session 400…） |
-| `docs/roadmap.md` | 后续推荐改进（按优先级） |
-| `harness/plugins/` | 3 个自写 dsh 插件源码（可直接 `pnpm` 装） |
-| `harness/config/` | settings.yaml、cordis.patch.yml、systemd unit、凭证模板 |
-| `skills/` | NAS 研究栈技能（SKILL.md + workflows） |
-| `tools/` | 研究栈命令行工具（CDP 读网页、电商搜索、爬虫路由…） |
-
-## 三个自写插件
-
-1. **provider-proxy-settings**（v0.1.0）—— 核心模型路由。node 半边拦截 `llm/stream`，把启用的 provider 的请求改用 `curl --proxy` 子进程发出（流式 SSE 解析、HTTP 错误分类、开机自检）；浏览器半边渲染设置卡片。内置 33 家 provider 路由表，实际启用：`opencode-go`、`any`、`agent`。**含 `x-opencode-session: auto` 补丁**（Console Go 硬要求，详见 incidents #4）。
-2. **web-search-searxng**（v0.2.0）—— 主搜索。对接 NAS 上的自建 SearXNG 聚合器，零外部 API 成本，engines: bing/baidu/sogou/mojeek。
-3. **web-search-exa-settings**（v0.1.0）—— 备份搜索。包装官方 Exa provider，密钥可走环境变量。
+| `docs/searxng-preset.md` | 主预设详解：部署、引擎路由、清洗管线、查询语法、版本历史、改进方向 |
+| `docs/exa-preset.md` | 备预设详解：包装官方包的思路、动态热生效机制、密钥回退链、改进方向 |
+| `docs/comparison.md` | 双预设对比表、切换操作、选型决策、联动改进 |
+| `plugins/web-search-searxng/` | 主预设源码（core.js 纯函数层 + index.js HTTP 层 + 冒烟测试） |
+| `plugins/web-search-exa-settings/` | 备预设源码（node 半边 + browser 半边） |
+| `deploy/` | SearXNG 容器部署：docker-compose.yml + settings.yml（已脱敏） |
+| `config/cordis.patch.yml` | 两个预设的挂载与切换点（实际生效的 patch 层） |
 
 ## 快速操作
 
 ```bash
-systemctl status dsh-web          # 服务状态
-journalctl -u dsh-web -n 50       # 日志（grep provider-proxy 看路由结果）
-systemctl restart dsh-web         # 重启（注意：0.1.1-rc.2 无 token，重启后浏览器直接刷新即可）
-dsh --profile web --dump-config   # 查看插件树合成结果
-dsh --profile headless "任务文本"  # 一次性 agent 跑任务（不经 web UI）
+# 搜索引擎（聚合器）状态
+docker ps | grep searxng
+curl -s 'http://127.0.0.1:8080/search?q=test&format=json' | head -c 300
+
+# 切换预设
+#   1) 编辑 ~/.dsh/profiles/web/cordis.patch.yml: searchProvider: searxng → exa
+#   2) systemctl restart dsh-web
+
+# 冒烟测试（主预设纯函数层）
+node plugins/web-search-searxng/test/smoke.mjs
 ```
 
 ## 密钥纪律
 
-- **真实密钥只存于 `~/.dsh/.credentials.yaml`（chmod 600），绝不入库。** 本仓库只有 `harness/config/credentials.example.yaml` 模板。
-- `settings.yaml` / `cordis.patch.yml` 中只出现 `apiKeyEnv`（变量名引用）；唯一例外是 Exa key 曾明文写在 cordis.patch.yml 中，本仓库副本已脱敏，生产文件中仍保留（待改造成环境变量引用，见 roadmap #5）。
+- 本仓库所有副本已脱敏：SearXNG `secret_key`、Exa `apiKey` 均为占位符。
+- 真实值只存在于服务器：`/home/docker/searxng/config/secret_key`、`~/.dsh/profiles/web/cordis.patch.yml`（Exa 明文 key 待改造为 `$EXA_API_KEY` 环境引用，见 exa-preset.md 改进项 #1）。
