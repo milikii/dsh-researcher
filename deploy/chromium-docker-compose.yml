@@ -1,0 +1,110 @@
+services:
+  chromium:
+    image: lscr.io/linuxserver/chromium:latest
+    container_name: chromium
+    hostname: chromium
+
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Shanghai
+
+      # LinuxServer 会把这个字符串传递给 Chromium。
+      # 开启 CDP，但只监听容器内部网络。
+      # 代理走本机 mihomo（172.28.0.10:7890，同桥接网络直连），
+      # 浏览器可访问 Google/YouTube/X 等，同时按 mihomo 规则分流国内站点。
+      #
+      # proxy-bypass-list：Chromium 默认只绕过 loopback，局域网地址仍会被丢给代理，
+      # 结果是内网服务全部 502（实测 192.168.1.220:7576 经代理 5 秒超时，直连 3.7ms）。
+      # 这里显式排除私网段 + .local + 无点主机名，让内网直连、只有公网走代理。
+      # 切换到 xray 时只需把 proxy-server 改成 http://172.28.0.20:1087，bypass 不用动。
+      #
+      # 核显直通后启用 VAAPI 硬件解码/编码（UHD 630）。
+      - CHROME_CLI=--remote-debugging-address=0.0.0.0 --remote-debugging-port=9222 --proxy-server=http://172.28.0.10:7890 --proxy-bypass-list=localhost;127.0.0.1;[::1];10.0.0.0/8;172.16.0.0/12;192.168.0.0/16;100.64.0.0/10;*.local;<local> --use-gl=angle --use-angle=vaapi --enable-features=VaapiVideoDecoder,VaapiVideoEncoder --ignore-gpu-blocklist
+
+    volumes:
+      # Profile 持久化：Cookie / LocalStorage / 设置 / 登录状态都保存在 NAS 上
+      - /home/docker/chromium/config:/config
+
+    devices:
+      # 核显直通（i7-8700 UHD 630）：Web UI 屏幕编码与视频解码走 iGPU，减轻 CPU 压力
+      - /dev/dri:/dev/dri
+
+    group_add:
+      # video 组：让容器内 abc 用户可访问 card0/renderD128
+      - "44"
+
+    ports:
+      # 只暴露 HTTPS Web UI 到局域网
+      - "3001:3001"
+
+    expose:
+      # CDP 只在 Docker network 内提供，不映射到宿主机
+      - "9222"
+
+    shm_size: "512m"
+
+    # 2026-09-06：本容器曾以 exit 128 退出后未被 unless-stopped 拉起，静默停机约 12 小时；
+    # 期间固定 IP 172.19.0.2 被未指定 IP 的 mediacrawler 抢占，全栈 CDP 工具（地址写死）
+    # 因此连到错误的浏览器。healthcheck 探活容器内 CDP，让这类故障在 docker ps 就可见。
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9222/json/version"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+    # NAS Researcher 2026-08-26：4 核 / 6G（用户确认），配合核显直通解决 Windows 端 Web UI 卡顿
+    mem_limit: 6g
+    mem_reservation: 512m
+
+    # 最多使用 4 个 CPU
+    cpus: 4.0
+
+    # 防止容器产生过大的日志
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    restart: unless-stopped
+
+    networks:
+      ai-browser:
+        # 固定 IP：socat 伴生容器需要绑定该地址转发 CDP
+        ipv4_address: 172.19.0.2
+      # 接入 mihomo 代理所在桥接网络（172.28.0.10:7890）
+      mihomo_hostlink:
+
+  # Chrome 136+ 安全变更：CDP 强制绑定 127.0.0.1，
+  # --remote-debugging-address=0.0.0.0 被忽略（docker-chromium#71）。
+  # 使用 socat 伴生容器共享 chromium 网络命名空间，
+  # 绑定 chromium 的 eth0 IP:9222 并转发到 127.0.0.1:9222，
+  # 仅 Docker 网络内可见，不发布任何宿主机端口。
+  chromium-cdp-proxy:
+    image: alpine/socat:latest
+    container_name: chromium-cdp-proxy
+    network_mode: "service:chromium"
+    depends_on:
+      - chromium
+    environment:
+      - TZ=Asia/Shanghai
+    # 注意：不能绑定 0.0.0.0:9222（与 chromium 的 127.0.0.1:9222 通配冲突 EADDRINUSE），
+    # 因此绑定 chromium 固定容器 IP 172.19.0.2。
+    # retry/interval：等待 chromium 的 CDP 就绪。（镜像 ENTRYPOINT 已是 socat）
+    command: tcp-listen:9222,fork,reuseaddr,bind=172.19.0.2 tcp:127.0.0.1:9222,retry=60,interval=2
+    mem_limit: 128m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+
+networks:
+  ai-browser:
+    external: true
+  mihomo_hostlink:
+    external: true

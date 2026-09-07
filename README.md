@@ -1,64 +1,79 @@
-# dsh 搜索预设：SearXNG（主）+ Exa（备）
+# dsh-researcher：dsh 搜索研究栈（搜索预设 + 浏览器层 + 爬虫项目）
 
-DeepSeek Harness（dsh）Web 会话的 `web_search` 能力由两个可切换的搜索预设供给：
+DeepSeek Harness（dsh）Web 会话的 `web_search` 与其背后的完整研究栈——**分五层**：
+
+```
+L1  搜索预设层    web_search 后端，双预设可切换
+      ├─ searxng（主）：自建 SearXNG 聚合器，零成本，中文优化
+      └─ exa（备）：商业语义搜索，neural 检索 + 故障兜底
+L2  平台专用搜索  shop-search（电商登录态搜索）、x-search
+L3  URL 读取层   fetch-url（http → CDP 自动降级）
+L4  登录态深读   Docker Chromium + CDP（持久登录态的真实浏览器）
+L5  批量采集     MediaCrawler（复用 L4 登录态）+ shop-search 兜底链
+```
+
+核心原则（`skills/nas-core`）：**Chromium 是"登录态网页深度读取器"，不是搜索引擎——搜索第一入口永远是 web_search（SearXNG）。**
+
+---
+
+## 两个搜索预设（L1）
 
 | 预设 | 插件 | 版本 | 角色 | 成本 |
 |---|---|---|---|---|
-| **searxng** | `@dsh-local/web-search-searxng` | 0.2.0 | **主搜索**（日常钉死） | 零（自建聚合器） |
-| **exa** | `@dsh-local/web-search-exa-settings` | 0.1.0 | **备份搜索**（语义检索 / 主搜索故障兜底） | Exa API 配额 |
+| **searxng** | `@dsh-local/web-search-searxng` | 0.2.0 | **主搜索**（日常钉死） | 零（自建） |
+| **exa** | `@dsh-local/web-search-exa-settings` | 0.1.0 | **备份**（语义检索 / 兜底） | Exa API 配额 |
 
-两个 provider 同时注册进 dsh 的 `ctx.web` seam，`cordis.patch.yml` 里一行 `searchProvider` 钉死当前生效者；切换 = 改一个词 + 重启服务。
-
-```bash
-# config/cordis.patch.yml（节选，完整见仓库）
-- id: web
-  config:
-    searchProvider: searxng    # ← 改成 exa 即切换备份预设
-```
-
-## 为什么是这两个预设（思路）
-
-- **自建优先**：SearXNG 跑在自己机器的 Docker 里（`deploy/`），聚合 bing/baidu/sogou/google/brave/ddg 等 13 家引擎，查询不出家门、无配额、无 API 费用，且可按中文场景定制路由。这就是它当**主预设**的原因。
-- **保留商业备份**：Exa 的 neural（语义）检索是关键词聚合器做不到的能力——"找和这篇论文相似的""找讨论过这个概念的长文"这类查询 Exa 更强；同时它是 SearXNG 整体故障时的兜底。两者能力互补，不是简单冗余。
-- **插件化而非 fork**：两个预设都以 dsh 插件形式挂载（`cordis.patch.yml` insert 行），不改 harness 本体，升级 harness 不丢搜索能力。
+切换 = `cordis.patch.yml` 改一行 `searchProvider: searxng|exa` + 重启 dsh-web。详见 `docs/comparison.md`。
 
 ## 当前状态（2026-09-07）
 
 | 层 | 组件 | 状态 |
 |---|---|---|
-| 聚合器 | SearXNG Docker（`searxng/searxng:latest`，本机 8080 端口） | 运行中，13 引擎启用，JSON API 开放 |
-| 主预设插件 | web-search-searxng 0.2.0 | 线上生效（`searchProvider: searxng`） |
-| 备预设插件 | web-search-exa-settings 0.1.0 | 已注册可用，带 UI 设置卡片 + 热生效 |
-| harness 运行时 | dsh 0.1.1-rc.2（web profile） | searxng 预设不依赖 dsh-settings API，升级 0.1.2 无需迁移；exa 预设需迁移（见 `docs/exa-preset.md` §5） |
+| L1 | SearXNG 容器（8080，13 引擎）+ 两插件 | 运行中；searxng 预设钉死生效 |
+| L4 | chromium 容器（CDP `172.19.0.2:9222` 经 socat 暴露于 Docker 网络内，healthcheck 绿） | 运行中，登录态持久化 |
+| L5 | mediacrawler 容器（WebUI 8088，CDP bridge 接 chromium 登录态） | 运行中 |
+| 底座 | mihomo 代理（宿主机 7890） | 运行中 |
+| harness | dsh 0.1.1-rc.2（web profile） | searxng 预设升级免迁移；exa 预设有 0.1.2 迁移方案（已验证） |
 
 ## 目录
 
 | 路径 | 内容 |
 |---|---|
-| `docs/searxng-preset.md` | 主预设详解：部署、引擎路由、清洗管线、查询语法、版本历史、改进方向 |
-| `docs/exa-preset.md` | 备预设详解：包装官方包的思路、动态热生效机制、密钥回退链、改进方向 |
-| `docs/comparison.md` | 双预设对比表、切换操作、选型决策、联动改进 |
-| `plugins/web-search-searxng/` | 主预设源码（core.js 纯函数层 + index.js HTTP 层 + 冒烟测试） |
-| `plugins/web-search-exa-settings/` | 备预设源码（node 半边 + browser 半边） |
-| `deploy/` | SearXNG 容器部署：docker-compose.yml + settings.yml（已脱敏） |
-| `config/cordis.patch.yml` | 两个预设的挂载与切换点（实际生效的 patch 层） |
+| `docs/searxng-preset.md` | 主预设：部署、引擎路由、清洗管线、查询语法、版本、改进 |
+| `docs/exa-preset.md` | 备预设：包装官方包思路、热生效机制、密钥回退链、改进 |
+| `docs/comparison.md` | 双预设对比、切换操作、选型决策、联动 roadmap |
+| `docs/browser-and-crawlers.md` | **L2-L5 全解**：Chromium CDP 设计、cdp-solve 验证接管、MediaCrawler、shop-search 栈、mihomo |
+| `plugins/` | 两个搜索预设插件源码 |
+| `deploy/` | 4 个容器部署：searxng / chromium(+cdp-proxy) / mediacrawler(+cdp-bridge) / mihomo |
+| `tools/` | 11 个栈工具（cdp-solve、cdp_read、shop-search×3、mc-crawl、x-search、巡检×2、fetch-url-tests） |
+| `skills/` | dsh 技能路由文档：nas-core（基座/纪律）、nas-search（L1-L5 路由）、nas-shop（电商比价） |
+| `config/cordis.patch.yml` | 搜索预设的挂载与切换点 |
 
 ## 快速操作
 
 ```bash
-# 搜索引擎（聚合器）状态
-docker ps | grep searxng
-curl -s 'http://127.0.0.1:8080/search?q=test&format=json' | head -c 300
+# L1 搜索层
+curl -s 'http://127.0.0.1:8080/search?q=test&format=json' | head -c 300   # SearXNG 直测
+node plugins/web-search-searxng/test/smoke.mjs                            # 插件冒烟
 
-# 切换预设
-#   1) 编辑 ~/.dsh/profiles/web/cordis.patch.yml: searchProvider: searxng → exa
-#   2) systemctl restart dsh-web
+# L4/L5 容器
+docker ps --format '{{.Names}}\t{{.Status}}' | grep -E 'chromium|searxng|mediacrawler|mihomo'
 
-# 冒烟测试（主预设纯函数层）
-node plugins/web-search-searxng/test/smoke.mjs
+# 栈巡检
+bash tools/nas-stack-status.sh
+
+# 切换搜索预设
+#   vim ~/.dsh/profiles/web/cordis.patch.yml → searchProvider: exa → systemctl restart dsh-web
 ```
 
 ## 密钥纪律
 
-- 本仓库所有副本已脱敏：SearXNG `secret_key`、Exa `apiKey` 均为占位符。
-- 真实值只存在于服务器：`/home/docker/searxng/config/secret_key`、`~/.dsh/profiles/web/cordis.patch.yml`（Exa 明文 key 待改造为 `$EXA_API_KEY` 环境引用，见 exa-preset.md 改进项 #1）。
+- 本仓库所有副本已脱敏：SearXNG `secret_key`、Exa `apiKey` 均为占位符；mihomo 代理配置（订阅/节点）不入库；cookie 名单只含**名字**不含值。
+- 真实值只存在于服务器：`/home/docker/searxng/config/secret_key`、`~/.dsh/profiles/web/cordis.patch.yml`、`/opt/stacks/mihomo/config/`。
+- chromium `/config` 卷含全部登录态 Cookie，绝不镜像入库。
+
+## 范围说明
+
+- 本仓库 = **搜索研究栈**（L1-L5 + 工具 + 技能文档 + 容器部署）。
+- dsh harness 本身的部署/版本管理是另一个主题（systemd 服务、模型路由、版本回滚），不在本仓库范围。
+- MediaCrawler 源码为本地 build 的 `mediacrawler:local` 镜像，源码目录不在本仓库（`deploy/` 只含容器编排）。

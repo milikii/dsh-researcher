@@ -1,0 +1,66 @@
+services:
+  mediacrawler:
+    build: .
+    image: mediacrawler:local
+    container_name: mediacrawler
+    hostname: mediacrawler
+
+    environment:
+      - TZ=Asia/Shanghai
+
+    ports:
+      # WebUI/API（uvicorn），仅局域网
+      - "8088:8080"
+
+    volumes:
+      - /home/docker/mediacrawler/config:/app/config
+      - /home/docker/mediacrawler/data:/app/data
+
+    networks:
+      ai-browser:
+        # 固定 IP（2026-09-06）：本服务原先不指定 IP，chromium 容器退出后
+        # 其固定地址 172.19.0.2 被本容器抢占，导致全栈 CDP 工具（写死 172.19.0.2:9222）
+        # 连到 MediaCrawler 的 socat bridge 并自环。固定到 .6 避免再次争用。
+        ipv4_address: 172.19.0.6
+
+    shm_size: "512m"
+    mem_limit: 2g
+    mem_reservation: 512m
+    cpus: 2.0
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    restart: unless-stopped
+
+  # MediaCrawler 的 CDP 模式写死连接 localhost:9222（容器内）。
+  # 此伴生容器共享 mediacrawler 网络命名空间，把容器内 127.0.0.1:9222
+  # 转发到无头浏览器 chromium 的 CDP（172.19.0.2:9222），
+  # 让采集复用真实登录态（Cookie/扩展/风控表现等同于真人浏览器）。
+  mediacrawler-cdp-bridge:
+    image: alpine/socat:latest
+    container_name: mediacrawler-cdp-bridge
+    network_mode: "service:mediacrawler"
+    depends_on:
+      - mediacrawler
+    environment:
+      - TZ=Asia/Shanghai
+    # 镜像 ENTRYPOINT 即 socat：监听容器内 127.0.0.1:9222，转发到 chromium CDP
+    command:
+      - tcp-listen:9222,fork,reuseaddr,bind=127.0.0.1
+      - tcp:172.19.0.2:9222,retry=60,interval=2
+    mem_limit: 128m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+
+networks:
+  ai-browser:
+    external: true

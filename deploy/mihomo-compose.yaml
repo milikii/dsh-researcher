@@ -1,0 +1,31 @@
+services:
+  mihomo:
+    image: metacubex/mihomo:Alpha
+    container_name: mihomo
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      net.ipv4.ip_forward: 1
+    volumes:
+      - ./config:/root/.config/mihomo
+    networks:
+      mnet:
+        ipv4_address: 192.168.1.250
+        # 保证默认路由走 LAN 网关（旁路由语义不变），bridge 腿只作主机互通
+        gw_priority: 1
+      hostlink:
+        ipv4_address: 172.28.0.10
+
+networks:
+  mnet:
+    external: true
+  # 主机 ↔ 容器互通桥（macvlan 主机不可达的补偿）：
+  # systemd mihomo-lan-proxy 把 192.168.1.220:7890 等转发到 172.28.0.10:7890
+  hostlink:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
