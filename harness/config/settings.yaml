@@ -1,0 +1,79 @@
+ui-onboarding:
+  welcomeNoticeVersion: 2026-08-13.1
+llm-pi-ai:
+  providers:
+    opencode-go:
+      apiKeyEnv: OPENCODE_GO_API_KEY
+      # Console Go requires a stable per-conversation session id header for
+      # routing and prompt caching; 'auto' = the harness session id.
+      headers:
+        x-opencode-session: auto
+    any:
+      apiKeyEnv: ANY_API_KEY
+      api: anthropic-messages
+      baseURL: https://anyrouter.top
+      headers:
+        anthropic-beta: context-1m-2025-08-07
+      models:
+        - id: claude-opus-5
+          name: claude-opus-5
+          reasoningEfforts:
+            off: null
+            low: low
+            medium: medium
+            high: high
+            max: max
+    agent:
+      apiKeyEnv: AGENT_API_KEY
+      api: openai-responses
+      baseURL: https://agentrouter.org/v1
+      headers:
+        user-agent: claude-cli/2.1.220 (external, sdk-cli)
+      models:
+        - id: gpt-5.6-sol
+          name: gpt-5.6-sol
+          reasoningEfforts:
+            off: null
+            low: low
+            medium: medium
+            high: high
+            xhigh: xhigh
+            max: max
+    glm:
+      apiKeyEnv: AGENT_API_KEY
+      api: openai-completions
+      baseURL: https://agentrouter.org/v1
+      headers:
+        user-agent: claude-cli/2.1.220 (external, sdk-cli)
+      models:
+        - id: glm-5.3
+          name: glm-5.3
+          reasoningEfforts:
+            off: null
+            low: low
+            medium: medium
+            high: high
+            max: max
+    arak:
+      apiKeyEnv: ARAK_API_KEY
+      api: openai-completions
+      baseURL: https://windhub.cc/v1
+      models:
+        - id: gpt-5.6-luna
+          name: gpt-5.6-luna
+          maxTokens: 16384
+          reasoningEfforts: false
+      defaultMaxTokens: 16384
+agent-default-model:
+  provider: opencode-go
+  model: deepseek-v4-flash
+  reasoningEffort: max
+provider-proxy:
+  proxyUrl: http://192.168.1.220:7890
+  enabled:
+    opencode-go: true
+    any: true
+    agent: true
+    arak: false
+agent-presets:
+  default: nas-researcher

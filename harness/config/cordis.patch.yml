@@ -1,0 +1,43 @@
+# Your patch layer for this dsh profile, applied after every bundle layer:
+# a top-level YAML array of loader patch entries (id-targeted config
+# overrides, disables, and insert lists; `!!js` expressions allowed).
+
+# Mount the Exa search provider into the host `web` seam (kept as backup).
+# The row loads @dsh-local/web-search-exa-settings — a dual-face package
+# around the official @deepseek-ai/dsh-web-search-exa provider: the node half
+# registers the provider + the `web-search-exa` settings section, the browser
+# half renders its Settings → 插件 card (hot reload on save).
+- insert:
+    - id: web-search-exa
+      name: '@dsh-local/web-search-exa-settings'
+      config:
+        apiKey: <你的-EXA-API-KEY>
+
+# Mount the provider-proxy capability: route selected model providers through
+# an HTTP proxy. The row loads @dsh-local/provider-proxy-settings — a dual-face
+# package: the node half registers the `provider-proxy` settings section and
+# intercepts llm/stream (curl --proxy for enabled providers), the browser half
+# renders its Settings → 插件 card. Durable across restarts (unlike the old
+# session-scoped dynamic plugin prxy-7/ppxy-8/ppxy-9).
+- insert:
+    - id: provider-proxy-settings
+      name: '@dsh-local/provider-proxy-settings'
+      config: {}
+
+# Mount the self-hosted SearXNG search provider (NAS: /home/docker/searxng,
+# JSON API at host port 8080, engines: bing/baidu/sogou/mojeek).
+# This is the primary web_search backend now — zero external API costs,
+# results come from our own aggregator on the NAS LAN.
+- insert:
+    - id: web-search-searxng
+      name: '@dsh-local/web-search-searxng'
+      config:
+        baseURL: http://127.0.0.1:8080
+        numResults: 20
+
+# Pin web search to the SearXNG provider (selection is deterministic:
+# configured id must be registered and available). Switch back to Exa by
+# changing this value to `exa` and restarting the dsh web service.
+- id: web
+  config:
+    searchProvider: searxng
